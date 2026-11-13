@@ -95,8 +95,6 @@ cells('dt_atend','7 · Data do atendimento',332,[775,808,839,871,904,937,969,100
 step=1;
 t('nome','8 · Nome do paciente',137,391,654,120);
 date('nasc','9 · Data de nascimento',821,389,182);
-add('hora_nasc','Horário de nascimento (para idade em horas)','time',null,{uiOnly:true});
-add('hora_atend','Horário do atendimento (para idade em horas)','time',null,{uiOnly:true});
 cells('idade','10 · Idade (quando preenchida em lugar da data de nascimento)',440,[130,160,194,226]);
 c('idade_tipo','Unidade da idade',284,411,opts('1:Hora|2:Dia|3:Mês|4:Ano'));
 c('sexo','11 · Sexo',484,412,opts('M:Masculino|F:Feminino|I:Ignorado'));
@@ -309,28 +307,18 @@ function todayCalendar() {
   const now=new Date();
   return [now.getDate(),now.getMonth()+1,now.getFullYear()].map((v,i)=>String(v).padStart(i===2?4:2,'0')).join('/');
 }
-function ageAt(birth,reference,birthTime,referenceTime) {
+function ageAt(birth,reference) {
   if(reference<birth) return {error:'A data de nascimento é posterior à data de referência.'};
-  let years=reference.getUTCFullYear()-birth.getUTCFullYear();
-  if(reference.getUTCMonth()<birth.getUTCMonth() || (reference.getUTCMonth()===birth.getUTCMonth() && reference.getUTCDate()<birth.getUTCDate())) years--;
-  if(years>=1) return {value:String(years),unit:'4'};
+  const days=Math.floor((reference-birth)/86400000);
+  if(days<=1) return {manual:true};
+  if(days<30) return {value:String(days),unit:'2'};
   let months=(reference.getUTCFullYear()-birth.getUTCFullYear())*12+reference.getUTCMonth()-birth.getUTCMonth();
   if(reference.getUTCDate()<birth.getUTCDate()) months--;
-  if(months>=1) return {value:String(months),unit:'3'};
-  const days=Math.floor((reference-birth)/86400000);
-  const timeValid=t=>/^([01]\d|2[0-3]):[0-5]\d$/.test(t||'');
-  if(timeValid(birthTime)&&timeValid(referenceTime)) {
-    const minutes=t=>Number(t.slice(0,2))*60+Number(t.slice(3));
-    const total=days*1440+minutes(referenceTime)-minutes(birthTime);
-    if(total<0) return {error:'O horário de nascimento é posterior ao atendimento.'};
-    if(total<1440) return {value:String(Math.floor(total/60)),unit:'1'};
-    return {value:String(Math.floor(total/1440)),unit:'2'};
-  }
-  if(days===0) return {error:'Informe os horários de nascimento e atendimento para calcular a idade em horas.'};
-  return {value:String(days),unit:'2'};
+  if(months<12) return {value:String(Math.max(1,months)),unit:'3'};
+  return {value:String(Math.floor(months/12)),unit:'4'};
 }
 function applyRules(data) {
-  const disabled=new Set(),readonly=new Set(['idade','idade_tipo']),required=new Set(['especie','cond_animal']),errors={};
+  const disabled=new Set(),readonly=new Set(),required=new Set(['especie','cond_animal']),errors={};
   const clear=id=>{disabled.add(id);data[id]='';};
   if(data.especie!=='6') clear('herb'); else required.add('herb');
   if(data.especie!=='7') clear('esp_out'); else required.add('esp_out');
@@ -339,13 +327,22 @@ function applyRules(data) {
   const birth=parseCalendar(data.nasc);
   const refText=data.dt_atend||data.dt_notif||todayCalendar();
   const reference=parseCalendar(refText);
-  data.idade='';data.idade_tipo='';
+  const ageKey=(data.nasc||'')+'|'+refText;
+  if(data._ageKey!==ageKey) {data.idade='';data.idade_tipo='';data._ageKey=ageKey;}
+  let manualNewborn=false;
   if(birth&&reference) {
-    const age=ageAt(birth,reference,data.hora_nasc,data.hora_atend);
-    if(age.error) errors.nasc=age.error;
-    else {data.idade=age.value;data.idade_tipo=age.unit;}
+    const age=ageAt(birth,reference);
+    if(age.error) {errors.nasc=age.error;data.idade='';data.idade_tipo='';}
+    else if(age.manual) {
+      manualNewborn=true;
+      if(!['1','2'].includes(data.idade_tipo)) data.idade_tipo='';
+      if(data.idade && data.idade_tipo==='2' && Number(data.idade)>1) errors.idade='Para esta data, informe até 1 dia ou selecione horas.';
+      if(data.idade && data.idade_tipo==='1' && Number(data.idade)>24) errors.idade='Para esta data, informe até 24 horas ou selecione dias.';
+    } else {
+      data.idade=age.value;data.idade_tipo=age.unit;
+      readonly.add('idade');readonly.add('idade_tipo');
+    }
   }
-  if((data.hora_nasc||data.hora_atend)&&(!data.hora_nasc||!data.hora_atend)) errors.hora_nasc='Preencha os dois horários para calcular a idade com precisão.';
   const vaccine=['1','4','5','6','7'].includes(data.trat);
   const four=['4','5','6'].includes(data.trat);
   const offsets=four?[0,3,7,14]:data.trat==='1'?[0,7]:[];
@@ -374,7 +371,7 @@ function applyRules(data) {
   }
   if(data.peso && Number(data.peso.replace(',','.'))<=0) errors.peso='Informe um peso maior que zero.';
   for(const id of required) if(!(data[id]||'').trim()) errors[id]='Campo obrigatório.';
-  return {disabled,readonly,required,errors,scheduleNote,reference:refText,vaccine,four};
+  return {disabled,readonly,required,errors,scheduleNote,reference:refText,vaccine,four,manualNewborn};
 }
 function updateRuleControls(rules) {
   for(const field of fields) {
@@ -384,12 +381,13 @@ function updateRuleControls(rules) {
     control.value=values[field.id]||'';
     control.disabled=rules.disabled.has(field.id)||(rules.readonly.has(field.id)&&control.tagName==='SELECT');
     if(control.tagName!=='SELECT') control.readOnly=rules.readonly.has(field.id);
+    if(field.id==='idade_tipo') for(const option of control.options) option.disabled=rules.manualNewborn && !['','1','2'].includes(option.value);
     control.required=rules.required.has(field.id);
     control.setAttribute('aria-required',String(control.required));
     let note=wrapper.querySelector('.rule-note');
     let text='';
     if(control.required) text='Obrigatório.';
-    if(field.id==='idade') text='Calculada na data do atendimento; na ausência, usa a notificação ou hoje ('+rules.reference+').';
+    if(field.id==='idade') text=rules.manualNewborn?'Até 1 dia de vida: preencha a quantidade e selecione dia ou hora.':'Calculada na data do atendimento; na ausência, usa a notificação ou hoje ('+rules.reference+').';
     if(field.id==='dose1') text=rules.four?'Programação de 4 doses: dias 0, 3, 7 e 14.':values.trat==='1'?'Pré-exposição: dias 0 e 7.':values.trat==='7'?'Reexposição: informe as datas conforme histórico e conduta profissional.':'';
     if(field.id==='dose2'&&rules.readonly.has('dose2')) text='Data programada automaticamente; confirme a aplicação no acompanhamento.';
     if(field.id==='observavel'&&control.disabled&&values.especie) text='Não, automaticamente para espécies diferentes de cão e gato.';
