@@ -17,6 +17,7 @@ header{background:#103b37;color:white;padding:26px 24px 29px}.mast,.shell{max-wi
 @media(max-width:900px){.work{grid-template-columns:minmax(0,1fr) minmax(285px,.72fr)}.grid{grid-template-columns:1fr}.form-body,.form-top,.actions,.preview-top{padding-left:14px;padding-right:14px}}
 @media(max-width:680px){header{padding:18px 14px}.shell{padding:12px 12px 22px}.work{grid-template-columns:1fr}.preview{position:static}.paper-area{max-height:58vh}.mast{align-items:flex-start;flex-wrap:wrap;gap:10px}.privacy{margin-left:67px;padding:4px 8px}.logo{width:46px;height:46px}.brand{gap:12px}.grid{grid-template-columns:1fr 1fr}.steps{margin-bottom:7px}}
 @media(max-width:410px){.grid{grid-template-columns:1fr}.actions,.preview-bottom{gap:6px}.btn{padding:7px 9px}}
+input:disabled,select:disabled,textarea:disabled{background:#edf0ef;color:#596764;cursor:not-allowed}input[readonly]{background:#edf5f3}.rule-note{font-size:.76rem;color:#42645d;line-height:1.4}
 </style>
 </head>
 <body>
@@ -94,6 +95,8 @@ cells('dt_atend','7 · Data do atendimento',332,[775,808,839,871,904,937,969,100
 step=1;
 t('nome','8 · Nome do paciente',137,391,654,120);
 date('nasc','9 · Data de nascimento',821,389,182);
+add('hora_nasc','Horário de nascimento (para idade em horas)','time',null,{uiOnly:true});
+add('hora_atend','Horário do atendimento (para idade em horas)','time',null,{uiOnly:true});
 cells('idade','10 · Idade (quando preenchida em lugar da data de nascimento)',440,[130,160,194,226]);
 c('idade_tipo','Unidade da idade',284,411,opts('1:Hora|2:Dia|3:Mês|4:Ano'));
 c('sexo','11 · Sexo',484,412,opts('M:Masculino|F:Feminino|I:Ignorado'));
@@ -154,7 +157,7 @@ c('lab_v','44 · Laboratório produtor da vacina',714,161,labs);
 t('lab_v_out','Outro laboratório produtor da vacina — especificar',745,172,226,65);
 t('lote','45 · Número do lote da vacina',152,230,381,45);
 cells('dt_val','46 · Data do vencimento da vacina',234,[741,774,806,838,871,903,934,967],'date');
-[[145,177,210,242],[288,320,353,386],[434,466,499,531],[581,612,645,677],[725,757,790,823]].forEach((centers,i)=>cells('dose'+(i+1),'47 · Data da '+(i+1)+'ª dose',i===4?310:313,centers,'daymonth'));
+[[145,177,210,242],[288,320,353,386],[434,466,499,531],[581,612,645,677],[725,757,790,823]].slice(0,4).forEach((centers,i)=>cells('dose'+(i+1),'47 · Data programada da '+(i+1)+'ª dose',313,centers,'date'));
 c('animal_final','48 · Condição final do animal',863,346,opts('1:Negativo para raiva (clínica)|2:Negativo para raiva (laboratório)|3:Positivo para raiva (clínica)|4:Positivo para raiva (laboratório)|5:Morto, sacrificado ou sem diagnóstico|9:Ignorado'));
 c('interrupcao','49 · Houve interrupção do tratamento?',380,399,yn);
 c('motivo','50 · Motivo da interrupção',842,404,opts('1:Indicação da unidade de saúde|2:Abandono|3:Transferência'));
@@ -222,6 +225,7 @@ function wrap(text,width,measure) {
 function layout(values,font) {
   const pages=[[],[]], errors={};
   for (const field of fields) {
+    if (field.uiOnly) continue;
     const {id,kind,position,page,centers,center,groups}=field;
     const value=(values[id]||'').trim().normalize('NFC');
     if (!value) continue;
@@ -247,7 +251,7 @@ function layout(values,font) {
         if (lines.length>8) { errors[id]='O texto excede as 8 linhas disponíveis. Reduza as observações.'; continue; }
         lines.forEach((txt,i)=>marks.push({txt,x,y:y+i*23.5,size:14}));
       } else if (centers) {
-        const raw=value.replace(/\//g,'');
+        const raw=(/^dose[1-4]$/.test(id)?value.slice(0,5):value).replace(/\//g,'');
         let offset=0;
         const parts=groups?groups.map(n=>{const part=raw.slice(offset,offset+n);offset+=n;return part;}):Array.from(raw);
         const rightAlign=id.startsWith('ibge_')||id==='idade'||id==='doses_ant';
@@ -291,6 +295,109 @@ async function makePdf(pages) {
   return doc.save({useObjectStreams:false,addDefaultPage:false});
 }
 
+function parseCalendar(value) {
+  if (!value || !validDate(value,false)) return null;
+  const [d,m,y]=value.split('/').map(Number);
+  const result=new Date(0);
+  result.setUTCFullYear(y,m-1,d);result.setUTCHours(0,0,0,0);
+  return result;
+}
+function calendarString(date) {
+  return [date.getUTCDate(),date.getUTCMonth()+1,date.getUTCFullYear()].map((v,i)=>String(v).padStart(i===2?4:2,'0')).join('/');
+}
+function todayCalendar() {
+  const now=new Date();
+  return [now.getDate(),now.getMonth()+1,now.getFullYear()].map((v,i)=>String(v).padStart(i===2?4:2,'0')).join('/');
+}
+function ageAt(birth,reference,birthTime,referenceTime) {
+  if(reference<birth) return {error:'A data de nascimento é posterior à data de referência.'};
+  let years=reference.getUTCFullYear()-birth.getUTCFullYear();
+  if(reference.getUTCMonth()<birth.getUTCMonth() || (reference.getUTCMonth()===birth.getUTCMonth() && reference.getUTCDate()<birth.getUTCDate())) years--;
+  if(years>=1) return {value:String(years),unit:'4'};
+  let months=(reference.getUTCFullYear()-birth.getUTCFullYear())*12+reference.getUTCMonth()-birth.getUTCMonth();
+  if(reference.getUTCDate()<birth.getUTCDate()) months--;
+  if(months>=1) return {value:String(months),unit:'3'};
+  const days=Math.floor((reference-birth)/86400000);
+  const timeValid=t=>/^([01]\d|2[0-3]):[0-5]\d$/.test(t||'');
+  if(timeValid(birthTime)&&timeValid(referenceTime)) {
+    const minutes=t=>Number(t.slice(0,2))*60+Number(t.slice(3));
+    const total=days*1440+minutes(referenceTime)-minutes(birthTime);
+    if(total<0) return {error:'O horário de nascimento é posterior ao atendimento.'};
+    if(total<1440) return {value:String(Math.floor(total/60)),unit:'1'};
+    return {value:String(Math.floor(total/1440)),unit:'2'};
+  }
+  if(days===0) return {error:'Informe os horários de nascimento e atendimento para calcular a idade em horas.'};
+  return {value:String(days),unit:'2'};
+}
+function applyRules(data) {
+  const disabled=new Set(),readonly=new Set(['idade','idade_tipo']),required=new Set(['especie','cond_animal']),errors={};
+  const clear=id=>{disabled.add(id);data[id]='';};
+  if(data.especie!=='6') clear('herb'); else required.add('herb');
+  if(data.especie!=='7') clear('esp_out'); else required.add('esp_out');
+  if(!data.especie) clear('observavel');
+  else if(!['1','2'].includes(data.especie)) {data.observavel='2';disabled.add('observavel');}
+  const birth=parseCalendar(data.nasc);
+  const refText=data.dt_atend||data.dt_notif||todayCalendar();
+  const reference=parseCalendar(refText);
+  data.idade='';data.idade_tipo='';
+  if(birth&&reference) {
+    const age=ageAt(birth,reference,data.hora_nasc,data.hora_atend);
+    if(age.error) errors.nasc=age.error;
+    else {data.idade=age.value;data.idade_tipo=age.unit;}
+  }
+  if((data.hora_nasc||data.hora_atend)&&(!data.hora_nasc||!data.hora_atend)) errors.hora_nasc='Preencha os dois horários para calcular a idade com precisão.';
+  const vaccine=['1','4','5','6','7'].includes(data.trat);
+  const four=['4','5','6'].includes(data.trat);
+  const offsets=four?[0,3,7,14]:data.trat==='1'?[0,7]:[];
+  const vaccineFields=['lab_v','lab_v_out','lote','dt_val','dose1','dose2','dose3','dose4','interrupcao','motivo','busca','evento_v'];
+  let scheduleNote='';
+  if(!vaccine) [...vaccineFields,'ind_soro','peso','qtd','tipo_soro','infilt','infilt_tipo','lab_s','lab_s_out','partida','evento_s'].forEach(clear);
+  else {
+    ['lab_v','lote','dt_val','dose1'].forEach(id=>required.add(id));
+    if(data.lab_v!=='4') clear('lab_v_out');else required.add('lab_v_out');
+    if(offsets.length) {
+      const first=parseCalendar(data.dose1);
+      for(let i=1;i<4;i++) {
+        const id='dose'+(i+1);
+        if(i>=offsets.length) {clear(id);continue;}
+        readonly.add(id);data[id]='';
+        if(first) {const d=new Date(first);d.setUTCDate(d.getUTCDate()+offsets[i]);data[id]=calendarString(d);}
+      }
+      if(first) scheduleNote='Campo 47: datas programadas a partir da 1ª dose; confirmar as aplicações no acompanhamento.';
+    } else {
+      // Reexposição pode exigir complementação de esquema anterior; registrar as datas conforme avaliação.
+      scheduleNote='';
+    }
+  }
+  if(data.trat==='6') {
+    required.add('peso');data.ind_soro='1';readonly.add('ind_soro');
+  }
+  if(data.peso && Number(data.peso.replace(',','.'))<=0) errors.peso='Informe um peso maior que zero.';
+  for(const id of required) if(!(data[id]||'').trim()) errors[id]='Campo obrigatório.';
+  return {disabled,readonly,required,errors,scheduleNote,reference:refText,vaccine,four};
+}
+function updateRuleControls(rules) {
+  for(const field of fields) {
+    const item=controls.get(field.id);
+    if(!item)continue;
+    const {control,wrapper}=item;
+    control.value=values[field.id]||'';
+    control.disabled=rules.disabled.has(field.id)||(rules.readonly.has(field.id)&&control.tagName==='SELECT');
+    if(control.tagName!=='SELECT') control.readOnly=rules.readonly.has(field.id);
+    control.required=rules.required.has(field.id);
+    control.setAttribute('aria-required',String(control.required));
+    let note=wrapper.querySelector('.rule-note');
+    let text='';
+    if(control.required) text='Obrigatório.';
+    if(field.id==='idade') text='Calculada na data do atendimento; na ausência, usa a notificação ou hoje ('+rules.reference+').';
+    if(field.id==='dose1') text=rules.four?'Programação de 4 doses: dias 0, 3, 7 e 14.':values.trat==='1'?'Pré-exposição: dias 0 e 7.':values.trat==='7'?'Reexposição: informe as datas conforme histórico e conduta profissional.':'';
+    if(field.id==='dose2'&&rules.readonly.has('dose2')) text='Data programada automaticamente; confirme a aplicação no acompanhamento.';
+    if(field.id==='observavel'&&control.disabled&&values.especie) text='Não, automaticamente para espécies diferentes de cão e gato.';
+    if(text) {if(!note){note=make('span','rule-note');wrapper.append(note);}note.textContent=text;}
+    else if(note)note.remove();
+  }
+}
+
 const $ = id => document.getElementById(id);
 const hints = [
   'Identifique a ficha, a unidade notificadora e as datas.',
@@ -304,6 +411,7 @@ const values=Object.create(null);
 const controls=new Map();
 const stepButtons=[];
 let active=0, pageIndex=0, font;
+let validateRequired=false;
 let renderHandle=0;
 let last={pages:[[],[]],errors:{}};
 function make(tag,className,text){
@@ -334,6 +442,7 @@ for(const field of fields){
     for(const [code,desc] of options) control.add(new Option(code===desc?desc:code+' · '+desc,code));
   } else {
     if(kind==='tel') control.type='tel';
+    if(kind==='time') control.type='time';
     if(['digits','date','daymonth','decimal'].includes(kind)) control.inputMode=kind==='decimal'?'decimal':'numeric';
     if(max) control.maxLength=kind==='date'?10:kind==='daymonth'?5:max;
     if(kind==='date') control.placeholder='DD/MM/AAAA';
@@ -413,7 +522,13 @@ function paint(){
 }
 function sync(){
   if (!font) return;
-  last=layout(values,font);
+  const rules=applyRules(values);
+  updateRuleControls(rules);
+  const output={...values};
+  if (rules.scheduleNote) output.obs=[output.obs,rules.scheduleNote].filter(Boolean).join('\n');
+  last=layout(output,font);
+  Object.assign(last.errors,rules.errors);
+  if (!validateRequired) for(const id of rules.required) if (!values[id]) delete last.errors[id];
   for(const [id,{control,err}] of controls){
     const issue=last.errors[id]||'';
     err.textContent=issue;
@@ -435,6 +550,7 @@ function saveFile(bytes){
 }
 async function exportPdf(){
   if($('export').disabled) return;
+  validateRequired=true;
   sync();
   const first=fields.find(f=>last.errors[f.id]);
   if(first){
@@ -456,6 +572,7 @@ $('back').addEventListener('click',()=>goTo(active-1));
 $('next').addEventListener('click',()=>active===sections.length-1?exportPdf():goTo(active+1));
 $('clear').addEventListener('click',()=>{
   if(Object.values(values).some(Boolean)&&!confirm('Apagar todos os dados digitados nesta ficha?'))return;
+  validateRequired=false;
   $('form').reset();
   for(const key of Object.keys(values)) delete values[key];
   $('feedback').textContent='';
