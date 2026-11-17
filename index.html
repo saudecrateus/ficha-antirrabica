@@ -124,11 +124,13 @@ c('gestante','12 · Gestante',792,415,opts('1:1º trimestre|2:2º trimestre|3:3�
 c('raca','13 · Raça/cor',992,413,opts('1:Branca|2:Preta|3:Amarela|4:Parda|5:Indígena'));
 c('escolar','14 · Escolaridade',829,459,opts('0:Analfabeto|1:1ª a 4ª série incompleta do ensino fundamental|2:4ª série completa do ensino fundamental|3:5ª a 8ª série incompleta do ensino fundamental|4:Ensino fundamental completo|5:Ensino médio incompleto|6:Ensino médio completo|7:Educação superior incompleta|8:Educação superior completa|9:Ignorado|10:Não se aplica'));
 c('etnia','Etnia',995,461,opts('1:Tupiniquim|2:Guarani|9:Ignorado'));
+add('documento','CARTÃO DO SUS (CNS) OU CPF','digits',null,{max:15,uiOnly:true});
 cells('sus','15 · Número do Cartão SUS',550,[121,136,152,169,185,201,217,233,249,266,282,299,315,331,348,365,381].slice(0,15));
+fields[fields.length-1].pdfOnly=true;
 t('mae','16 · Nome da mãe',411,549,592,120);
 c('pcd','Pessoa com deficiência (PcD)',190,594,yn);
 c('rua','Pessoa em situação de rua',469,594,yn);
-add('cpf','CPF do paciente','digits',[0,598,0],{max:11,centers:[559,605,653,694],groups:[3,3,3,2]});
+add('cpf_pdf','CPF do paciente','digits',[0,598,0],{max:11,centers:[559,605,653,694],groups:[3,3,3,2],pdfOnly:true});
 t('nacional','Nacionalidade',717,598,288,60);
 t('passaporte','Passaporte',120,645,402,30);
 
@@ -401,9 +403,12 @@ async function loadCnesCity(code) {
 }
 function valuesForPdf(data,rules) {
   const out={...data};
+  const document=data.documento||'';
+  out.sus=document.length===15?document:'';
+  out.cpf_pdf=document.length===11?document:'';
   const notifier=cnesSelected(data),reference=cnesSelected(data,true);
-  out.un_notif=notifier?notifier[0]:'';
-  out.ubs_ref=reference?reference[0]+' - CNES '+reference[1]:'';
+  out.un_notif=notifier?notifier[0]:data._manualNotifier||'';
+  out.ubs_ref=reference?reference[0]+' - CNES '+reference[1]:[data._manualReference,data.cnes_ref?'CNES '+data.cnes_ref:''].filter(Boolean).join(' - ');
   if(rules.scheduleNote)out.obs=[rules.scheduleNote,out.obs].filter(Boolean).join('\n');
   return out;
 }
@@ -413,6 +418,8 @@ function attachCnesMenu(id,wrapper,control,err) {
   wrapper.insertBefore(search,control);
   const status=make('span','menu-status');status.setAttribute('role','status');wrapper.insertBefore(status,err);
   const reference=id==='ubs_ref';
+  const manualKey=reference?'_manualReference':'_manualNotifier';
+  search.maxLength=160;
   function refreshMenu(){
     const city=cnesCityCode(values,reference),rows=cnesCache.get(city)||[];
     search.value=formatInput('search',search.value);
@@ -422,6 +429,7 @@ function attachCnesMenu(id,wrapper,control,err) {
     const selected=menuRows.find(row=>row[1]===values[id]);
     if(selected && !visible.includes(selected))visible.push(selected);
     fillSearchMenu(control,visible,'',values[id]||'',status,'SELECIONE O ESTABELECIMENTO',true);
+    if(values[id]==='LOCAL' && values[manualKey]) {control.add(new Option('NOME INFORMADO · '+values[manualKey],'LOCAL'));control.value='LOCAL';}
     control.size=search.value?6:1;
     if(search.value)status.textContent=matches.length+' RESULTADO(S).'+(matches.length>300?' MOSTRANDO 300. DIGITE MAIS PARA REFINAR.':' SELECIONE UMA OPÇÃO ABAIXO.');
     if(!city)status.textContent='SELECIONE A UF E O MUNICÍPIO DO ESTABELECIMENTO.';
@@ -429,14 +437,24 @@ function attachCnesMenu(id,wrapper,control,err) {
     else if(!cnesCache.has(city))status.textContent='CARREGANDO A LISTA CNES DESTE MUNICÍPIO…';
     else if(!rows.length)status.textContent='NENHUM ESTABELECIMENTO ENCONTRADO NESTA BASE CNES.';
     else if(!search.value)status.textContent=rows.length+' ESTABELECIMENTOS.'+(rows.length>300?' DIGITE PARA REFINAR A LISTA.':'')+' BASE CNES DE 17/11/2026. DESATIVADOS IDENTIFICADOS NA LISTA.';
+    if(values[id]==='LOCAL' && values[manualKey])status.textContent='NOME DIGITADO MANTIDO. O CÓDIGO CNES PODE SER INFORMADO MANUALMENTE OU DEIXADO EM BRANCO.';
   }
   Object.assign(controls.get(id),{search,refreshMenu,facility:true});
-  search.addEventListener('input',refreshMenu);
-  control.addEventListener('change',()=>{values[id]=control.value;search.value='';refreshMenu();sync();});
+  search.addEventListener('input',()=>{
+    search.value=formatInput('search',search.value);
+    values[manualKey]=search.value.trim();
+    values[id]=values[manualKey]?'LOCAL':'';
+    refreshMenu();sync();
+  });
+  control.addEventListener('change',()=>{
+    values[id]=control.value;
+    if(control.value!=='LOCAL') {values[manualKey]='';search.value='';}
+    refreshMenu();sync();
+  });
 }
 
 function applyRules(data) {
-  const disabled=new Set(),readonly=new Set(),required=new Set(['nome','cpf','nasc','uf_res','mun_res','logradouro','numero']),errors={};
+  const disabled=new Set(),readonly=new Set(),required=new Set(['nome','documento','mae','raca','nasc','uf_res','mun_res','logradouro','numero']),errors={};
   const clear=id=>{disabled.add(id);data[id]='';};
   for(const field of fields) if(field.kind==='text'||field.kind==='textarea') data[field.id]=formatInput(field.kind,data[field.id]||'');
   for(const field of fields) if(field.step===3 && !['herb','esp_out','intervalo','doses_ant'].includes(field.id)) required.add(field.id);
@@ -456,7 +474,8 @@ function applyRules(data) {
   if(data.sexo==='M') {data.gestante='6';readonly.add('gestante');}
   else if(data._lastSex==='M') data.gestante='';
   data._lastSex=data.sexo||'';
-  if(data.cpf && data.cpf.length!==11) errors.cpf='Informe os 11 dígitos do CPF.';
+  data.documento=formatInput('digits',data.documento||'').slice(0,15);
+  if(data.documento && ![11,15].includes(data.documento.length)) errors.documento='Informe um CPF com 11 dígitos ou um CNS com 15 dígitos.';
   data.tel=formatInput('tel',data.tel||'');
   if(data.tel && ![10,11].includes(data.tel.replace(/\D/g,'').length)) errors.tel='Informe o DDD e o telefone completo: (00)90000-0000.';
   for(const [ufKey,cityKey,codeKey] of [['uf_notif','mun_notif','ibge_notif'],['uf_res','mun_res','ibge_res'],['uf_ref','mun_ref','ibge_ref']]) {
@@ -470,15 +489,23 @@ function applyRules(data) {
   for(const reference of [false,true]) {
     const city=cnesCityCode(data,reference),key=reference?'ubs_ref':'un_notif',codeKey=reference?'cnes_ref':'cnes_notif';
     const cityKey=reference?'_refCnesCity':'_notifCnesCity';
-    if(data[cityKey]!==city) {data[key]='';data[cityKey]=city;}
-    const selected=cnesSelected(data,reference);
-    if(!selected)data[key]='';
-    data[codeKey]=selected?selected[1]:'';readonly.add(codeKey);
-    if(!city||!cnesCache.has(city)||!(cnesCache.get(city)||[]).length)disabled.add(key);
-    if(data[key]&&!selected)errors[key]='Selecione um estabelecimento do município informado.';
+    const manualKey=reference?'_manualReference':'_manualNotifier';
+    if(data[cityKey]!==city) {data[key]='';data[manualKey]='';data[codeKey]='';data[cityKey]=city;}
+    data[manualKey]=formatInput('text',data[manualKey]||'').trim();
+    const manual=data[key]==='LOCAL'&&Boolean(data[manualKey]);
+    const selected=manual?null:cnesSelected(data,reference);
+    if(!selected&&!manual)data[key]='';
+    const modeKey=reference?'_referenceManualMode':'_notifierManualMode';
+    if(manual) {
+      if(data[modeKey]!==true)data[codeKey]='';
+      data[codeKey]=formatInput('digits',data[codeKey]||'').slice(0,7);
+      if(data[codeKey]&&data[codeKey].length!==7)errors[codeKey]='Informe os 7 dígitos do CNES ou deixe o campo em branco.';
+    } else {data[codeKey]=selected?selected[1]:'';readonly.add(codeKey);}
+    data[modeKey]=manual;
+    if(!manual&&(!city||!cnesCache.has(city)||!(cnesCache.get(city)||[]).length))disabled.add(key);
   }
   const notifier=cnesSelected(data);
-  data.inv_un=[data.mun_notif,notifier?notifier[0]:''].filter(Boolean).join(' / ');
+  data.inv_un=[data.mun_notif,notifier?notifier[0]:data._manualNotifier||''].filter(Boolean).join(' / ');
   data.inv_cnes=data.cnes_notif||'';
   readonly.add('inv_un');readonly.add('inv_cnes');
   const birth=parseCalendar(data.nasc);
@@ -581,7 +608,7 @@ function updateRuleControls(rules) {
     if(item.facility) {
       const city=cnesCityCode(values,field.id==='ubs_ref');
       if(control.dataset.city!==city) {control.dataset.city=city;item.search.value='';}
-      item.refreshMenu();item.search.disabled=rules.disabled.has(field.id);
+      item.refreshMenu();item.search.disabled=false;
     }
     control.value=values[field.id]||'';
     control.disabled=rules.disabled.has(field.id)||(rules.readonly.has(field.id)&&control.tagName==='SELECT');
@@ -599,6 +626,8 @@ function updateRuleControls(rules) {
     let note=wrapper.querySelector('.rule-note');
     let text='';
     if(control.required) text='Obrigatório.';
+    if(field.id==='documento') text=(values.documento||'').length===11?'CPF identificado (11 dígitos).':(values.documento||'').length===15?'CNS identificado (15 dígitos).':'Obrigatório. Informe o CPF (11 dígitos) ou o CNS (15 dígitos), apenas números.';
+    if(['cnes_notif','cnes_ref'].includes(field.id)&&!rules.readonly.has(field.id)) text='Código opcional: informe os 7 dígitos se conhecido ou deixe em branco.';
     if(field.id==='tel') text='Formato automático: (00)90000-0000. Informe todos os dígitos, incluindo o DDD.';
     if(field.id==='inv_un') text='Preenchido com o município de notificação e a unidade notificadora.';
     if(field.id==='gestante' && values.sexo==='M') text='Não se aplica, preenchido automaticamente para sexo masculino.';
@@ -642,6 +671,7 @@ for(const [i,name] of sections.entries()){
   stepButtons.push(btn);
 }
 for(const field of fields){
+  if(field.pdfOnly)continue;
   const {id,label,kind,step,options,max}=field;
   const wrapper=make('div','field'+(kind==='textarea'||['nome','mae','logradouro','ubs_ref','un_notif','ocup'].includes(id)?' wide':''));
   wrapper.dataset.step=step;
@@ -654,12 +684,13 @@ for(const field of fields){
     control.add(new Option('Selecione…',''));
     for(const [code,desc] of options) control.add(new Option(code===desc?desc:code+' · '+desc,code));
   } else {
-    if(kind==='tel') {control.type='tel';control.placeholder='(00)90000-0000';}
+    if(kind==='tel') {control.type='tel';control.inputMode='numeric';control.placeholder='(00)90000-0000';}
     if(kind==='time') control.type='time';
     if(['digits','date','daymonth','decimal'].includes(kind)) control.inputMode=kind==='decimal'?'decimal':'numeric';
     if(max) control.maxLength=kind==='date'?10:kind==='daymonth'?5:max;
     if(kind==='date') control.placeholder='DD/MM/AAAA';
     if(kind==='daymonth') control.placeholder='DD/MM';
+    if(id==='documento')control.placeholder='CPF: 11 DÍGITOS OU CNS: 15 DÍGITOS';
     if(kind==='textarea') control.placeholder='DIGITE AQUI SUAS OBSERVAÇÕES. ATÉ 1000 CARACTERES, CONFORME O ESPAÇO DA FICHA.';
   }
   const err=make('span','err');
